@@ -27,7 +27,6 @@
 # header files loaded
 import numpy as np
 import cv2
-import glob
 from ReadCameraModel import *
 from UndistortImage import *
 
@@ -70,20 +69,20 @@ def get_transformation_matrix(ptsLeft, ptsRight):
     sum_ptsLeft = 0.0
     sum_ptsRight = 0.0
     for index in range(0, len(ptsLeft)):
-        ptsLeft[index][0] = ptsLeft[index][0] - ptsLeft_mean_x
-        ptsLeft[index][1] = ptsLeft[index][1] - ptsLeft_mean_y
-        sum_ptsLeft = sum_ptsLeft + ((ptsLeft[index][0] ** 2) + (ptsLeft[index][1] ** 2))
+        x = ptsLeft[index][0] - ptsLeft_mean_x
+        y = ptsLeft[index][1] - ptsLeft_mean_y
+        sum_ptsLeft = sum_ptsLeft + np.sqrt((x ** 2) + (y ** 2))
         
     for index in range(0, len(ptsRight)):
-        ptsRight[index][0] = ptsRight[index][0] - ptsRight_mean_x
-        ptsRight[index][1] = ptsRight[index][1] - ptsRight_mean_y
-        sum_ptsRight = sum_ptsRight + ((ptsRight[index][0] ** 2) + (ptsRight[index][1] ** 2))
+        x = ptsRight[index][0] - ptsRight_mean_x
+        y = ptsRight[index][1] - ptsRight_mean_y
+        sum_ptsRight = sum_ptsRight + np.sqrt((x ** 2) + (y ** 2))
     sum_ptsLeft = sum_ptsLeft / len(ptsLeft)
     sum_ptsRight = sum_ptsRight / len(ptsRight)
     
     # scale factor for ptsLeft and ptsRight
-    scale_ptsLeft = np.sqrt(2) / np.sqrt(sum_ptsLeft)
-    scale_ptsRight = np.sqrt(2) / np.sqrt(sum_ptsRight)
+    scale_ptsLeft = np.sqrt(2) / sum_ptsLeft
+    scale_ptsRight = np.sqrt(2) / sum_ptsRight
     
     # get transformation matrices
     ptsLeft_transformation_matrix = np.dot(np.array([[scale_ptsLeft, 0, 0], [0, scale_ptsLeft, 0], [0, 0, 1]]), np.array([[1, 0, -ptsLeft_mean_x], [0, 1, -ptsLeft_mean_y], [0, 0, 1]]))
@@ -91,12 +90,14 @@ def get_transformation_matrix(ptsLeft, ptsRight):
     
     # get normalized points
     for index in range(0, len(ptsLeft)):
-        ptsLeft[index][0] = ptsLeft[index][0] * scale_ptsLeft
-        ptsLeft[index][1] = ptsLeft[index][1] * scale_ptsLeft
+        point = np.array([[ptsLeft[index][0]], [ptsLeft[index][1]], [1]])
+        point = np.dot(ptsLeft_transformation_matrix, point)
+        ptsLeft[index] = np.array([point[0][0] / point[2][0], point[1][0] / point[2][0]])
     
     for index in range(0, len(ptsRight)):
-        ptsRight[index][0] = ptsRight[index][0] * scale_ptsRight
-        ptsRight[index][1] = ptsRight[index][1] * scale_ptsRight
+        point = np.array([[ptsRight[index][0]], [ptsRight[index][1]], [1]])
+        point = np.dot(ptsRight_transformation_matrix, point)
+        ptsRight[index] = np.array([point[0][0] / point[2][0], point[1][0] / point[2][0]])
     
     # return matrices
     return (ptsLeft, ptsRight, ptsLeft_transformation_matrix, ptsRight_transformation_matrix)
@@ -130,7 +131,6 @@ def get_keypoints(image1, image2):
 
     for i,(m,n) in enumerate(matches):
         if m.distance < 0.8*n.distance:
-            good.append(m)
             ptsRight.append(kp2[m.trainIdx].pt)
             ptsLeft.append(kp1[m.queryIdx].pt)
 
@@ -156,16 +156,15 @@ def get_fundamental_matrix_ransac(ptsLeft, ptsRight):
     (ptsLeft, ptsRight, ptsLeft_transformation_matrix, ptsRight_transformation_matrix) = get_transformation_matrix(ptsLeft, ptsRight)
 
     # ransac for better matrix estimation
-    iterations = 500
-    error = 1000000
+    iterations = 5000
+    threshold = 0.03
+    count = 0
     best_fundamental_matrix = get_fundamental_matrix(ptsLeft[:8], ptsRight[:8], ptsLeft_transformation_matrix, ptsRight_transformation_matrix)
     for iteration in range(0, iterations):
         
         indexes = np.random.choice(np.array(ptsLeft).shape[0], 8, replace=False)
         selected_ptsLeft = []
         selected_ptsRight = []
-        not_selected_ptsLeft = []
-        not_selected_ptsRight = []
         for index in range(0, len(ptsLeft)):
             flag = 0
             for k in range(0, len(indexes)):
@@ -176,20 +175,19 @@ def get_fundamental_matrix_ransac(ptsLeft, ptsRight):
             if(flag):
                 selected_ptsLeft.append(ptsLeft[index])
                 selected_ptsRight.append(ptsRight[index])
-            else:
-                not_selected_ptsLeft.append(ptsLeft[index])
-                not_selected_ptsRight.append(ptsRight[index])
     
         estimated_fundamental_mat = get_fundamental_matrix(selected_ptsLeft, selected_ptsRight, ptsLeft_transformation_matrix, ptsRight_transformation_matrix)
-        estimated_error = 0.0
-        for index in range(0, len(not_selected_ptsLeft)):
-            x_right = np.array([[not_selected_ptsRight[index][0]], [not_selected_ptsRight[index][1]], [1]])
-            x_left = np.array([[not_selected_ptsLeft[index][0]], [not_selected_ptsLeft[index][1]], [1]])
-            value1 = np.dot(x_right.T, np.dot(estimated_fundamental_mat, x_left))
-            value2 = np.dot(x_left.T, np.dot(estimated_fundamental_mat, x_right))
-            estimated_error = estimated_error + ((value1 * value1) + (value2 * value2))
-        if(estimated_error < error):
-            error = estimated_error
+        estimated_count = 0
+        for index in range(0, len(ptsLeft)):
+            x_right = np.array([[ptsRight[index][0]], [ptsRight[index][1]], [1]])
+            x_left = np.array([[ptsLeft[index][0]], [ptsLeft[index][1]], [1]])
+            error = np.dot(x_right.T, np.dot(estimated_fundamental_mat, x_left))
+            
+            if(np.abs(error) < threshold):
+                estimated_count = estimated_count + 1
+                
+        if(estimated_count > count):
+            count = estimated_count
             best_fundamental_matrix = estimated_fundamental_mat
     
     # return fundamental matrix
@@ -234,7 +232,6 @@ def get_fundamental_matrix(pointsLeft, pointsRight, ptsLeft_transformation_matri
     
     # un-normalize fundamental_mat
     fundamental_mat = np.dot(ptsRight_transformation_matrix.T, np.dot(fundamental_mat, ptsLeft_transformation_matrix))
-    fundamental_mat = fundamental_mat / fundamental_mat[2, 2]
     
     # return the matrix
     return fundamental_mat
