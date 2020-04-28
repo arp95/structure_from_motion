@@ -191,6 +191,8 @@ def get_fundamental_matrix_ransac(ptsLeft, ptsRight):
             best_fundamental_matrix = estimated_fundamental_mat
     
     # return fundamental matrix
+    if(count < (0.7 * len(ptsLeft))):
+        print("-1")
     return best_fundamental_matrix
     
     
@@ -255,8 +257,51 @@ def get_essential_matrix(fundamental_matrix, k_matrix):
     s[0] = 1
     s[1] = 1
     s[2] = 0
-    essential_matrix = np.dot(u, np.dot(s, vh))
+    essential_matrix = np.dot(u, np.dot(np.diag(s), vh))
     essential_matrix = essential_matrix / np.linalg.norm(essential_matrix)
     
     # return matrix
     return essential_matrix
+
+
+#function to extract camera poses from essential matrix
+def get_camera_poses(essential_matrix):
+    """
+    Inputs:
+    
+    essential_matrix: return essential matrix
+    
+    Outputs:
+    
+    (r1, r2, r3, r4, c1, c2, c3, c4): four possible camera poses, that is, four rotation matrices and four translation matrices
+    """
+    
+    # define rotation matrix and get svd decomposition of essential matrix
+    w = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]])
+    u, d, v = np.linalg.svd(essential_matrix)
+
+    # define four camera poses (c1, r1), (c2, r2), (c3, r3), (c4, r4)
+    c1 = u[:, 2]
+    c2 = -u[:, 2]
+    c3 = u[:, 2]
+    c4 = -u[:, 2]
+    r1 = np.dot(u, np.dot(w, v))
+    r2 = np.dot(u, np.dot(w, v))
+    r3 = np.dot(u, np.dot(w.T, v))
+    r4 = np.dot(u, np.dot(w.T, v))
+
+    if np.linalg.det(r1) < 0:
+        r1 = -r1
+        c1 = -c1
+    if np.linalg.det(r2) < 0:
+        r2 = -r2
+        c2 = -c2
+    if np.linalg.det(r3) < 0:
+        r3 = -r3
+        c3 = -c3
+    if np.linalg.det(r4) < 0:
+        r4 = -r4
+        c4 = -c4
+    
+    # return four possible camera poses
+    return (r1, r2, r3, r4, c1, c2, c3, c4)
