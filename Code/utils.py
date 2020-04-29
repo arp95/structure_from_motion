@@ -311,8 +311,19 @@ def get_camera_poses(essential_matrix):
     return [[np.array(c1), np.array(c2), np.array(c3), np.array(c4)], [np.array(r1), np.array(r2), np.array(r3), np.array(r4)]]
 
 
-#determines whether the point is in front of camera or not
+# determines whether the point is in front of camera or not
 def is_point_in_front(camera_pose, point):
+    """
+    Inputs:
+    
+    camera_pose: the camera pose
+    point: the 3D point in camera coordinate system
+    
+    Output: 
+    
+    True/False: tells whether the point is in front of the camera or not
+    """
+    
     r = camera_pose[:, :-1]
     t = camera_pose[:, -1:]
 
@@ -322,8 +333,41 @@ def is_point_in_front(camera_pose, point):
     return False 
 
 
+# performs linear triangulation
+def get_linear_triangulation(camera_pose_1, camera_pose_2, pointLeft, pointRight, k_matrix):
+    """
+    Inputs:
+    
+    camera_pose_1: the base camera pose
+    camera_pose_2: the camera pose
+    pointLeft: the image point in the left image
+    pointRight: the image point in the right image
+    k_matrix: the camera matrix
+    
+    Output: 
+    
+    point: the 3D point in camera coordinate system
+    """
+
+    # get the cross-product matrix for point-1 and point-2
+    pointLeft_cross_product = np.array([[0, -1, pointLeft[1]], [1, 0, -pointLeft[0]], [-pointLeft[1], pointLeft[0], 0]])
+    pointRight_cross_product = np.array([[0, -1, pointRight[1]], [1, 0, -pointRight[0]], [-pointRight[1], pointRight[0], 0]])
+    
+    # get the m_matrix
+    camera_pose_1 = camera_pose_1[:-1, :]
+    m_matrix = np.vstack([np.dot(pointLeft_cross_product, np.dot(k_matrix, camera_pose_1)), np.dot(pointRight_cross_product, np.dot(k_matrix, camera_pose_2))])
+    a_matrix = m_matrix[:, :-1]
+    b = -m_matrix[:, -1:]
+    
+    # get the 3D point
+    point = np.dot(np.dot(np.linalg.inv(np.dot(a_matrix.T, a_matrix)), a_matrix.T), b)
+    
+    # return point
+    return point
+    
+    
 # estimate the best camera pose
-def get_best_camera_pose(translation_matrices, rotation_matrices, base_pose, ptsLeft, ptsRight):
+def get_best_camera_pose(translation_matrices, rotation_matrices, base_pose, ptsLeft, ptsRight, k_matrix):
     """
     Inputs:
     
@@ -345,16 +389,33 @@ def get_best_camera_pose(translation_matrices, rotation_matrices, base_pose, pts
     camera_pose_4 = np.hstack([rotation_matrices[3], translation_matrices[3]])
     
     # convert camera pose relative to base_pose
-    camera_pose_1 = camera_pose_1 * base_pose
-    camera_pose_2 = camera_pose_2 * base_pose
-    camera_pose_3 = camera_pose_3 * base_pose
-    camera_pose_4 = camera_pose_4 * base_pose
+    camera_pose_1 = np.dot(camera_pose_1, base_pose)
+    camera_pose_2 = np.dot(camera_pose_2, base_pose)
+    camera_pose_3 = np.dot(camera_pose_3, base_pose)
+    camera_pose_4 = np.dot(camera_pose_4, base_pose)
     
     # linear triangulation to find best pose
     best_count = 0
     best_pose = camera_pose_1
     for camera_pose in [camera_pose_1, camera_pose_2, camera_pose_3, camera_pose_4]:
-        print(camera_pose)
         
+        # loop through each point correspondence
+        count = 0
+        for index in range(0, len(ptsLeft)):
+            pointLeft = ptsLeft[index]
+            pointRight = ptsRight[index]
+            
+            # perform linear triangulation
+            point = get_linear_triangulation(base_pose, camera_pose, pointLeft, pointRight, k_matrix)
+            
+            # check in front of the camera
+            if(is_point_in_front(base_pose, point) and is_point_in_front(camera_pose, point)):
+                count = count + 1
+                
+        # update best_pose found
+        if(count > best_count):
+            best_count = count
+            best_pose = camera_pose
+            
     # return best camera pose
     return best_pose
