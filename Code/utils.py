@@ -130,7 +130,7 @@ def get_keypoints(image1, image2):
     ptsRight = []
 
     for i,(m,n) in enumerate(matches):
-        if m.distance < 0.8*n.distance:
+        if m.distance < (0.8 * n.distance):
             ptsRight.append(kp2[m.trainIdx].pt)
             ptsLeft.append(kp1[m.queryIdx].pt)
 
@@ -191,8 +191,6 @@ def get_fundamental_matrix_ransac(ptsLeft, ptsRight):
             best_fundamental_matrix = estimated_fundamental_mat
     
     # return fundamental matrix
-    if(count < (0.7 * len(ptsLeft))):
-        print("-1")
     return best_fundamental_matrix
     
     
@@ -303,5 +301,60 @@ def get_camera_poses(essential_matrix):
         r4 = -r4
         c4 = -c4
     
+    # reshape the translation matrices
+    c1 = c1.reshape(-1, 1)
+    c2 = c2.reshape(-1, 1)
+    c3 = c3.reshape(-1, 1)
+    c4 = c4.reshape(-1, 1)
+    
     # return four possible camera poses
-    return (r1, r2, r3, r4, c1, c2, c3, c4)
+    return [[np.array(c1), np.array(c2), np.array(c3), np.array(c4)], [np.array(r1), np.array(r2), np.array(r3), np.array(r4)]]
+
+
+#determines whether the point is in front of camera or not
+def is_point_in_front(camera_pose, point):
+    r = camera_pose[:, :-1]
+    t = camera_pose[:, -1:]
+
+    # cheirality condition
+    if((r[2, :] * (point + r.T * t)) > 0):
+        return True
+    return False 
+
+
+# estimate the best camera pose
+def get_best_camera_pose(translation_matrices, rotation_matrices, base_pose, ptsLeft, ptsRight):
+    """
+    Inputs:
+    
+    translation_matrices: set of translation matrices
+    rotation_matrices: set of rotation matrices
+    base_pose: the base pose
+    ptsLeft: the point correspondences for left image
+    ptsRight: the point correspondences for right image
+    
+    Output: 
+    
+    best_pose: the best camera pose for the frame
+    """
+    
+    # form four possible camera matrices
+    camera_pose_1 = np.hstack([rotation_matrices[0], translation_matrices[0]])
+    camera_pose_2 = np.hstack([rotation_matrices[1], translation_matrices[1]])
+    camera_pose_3 = np.hstack([rotation_matrices[2], translation_matrices[2]])
+    camera_pose_4 = np.hstack([rotation_matrices[3], translation_matrices[3]])
+    
+    # convert camera pose relative to base_pose
+    camera_pose_1 = camera_pose_1 * base_pose
+    camera_pose_2 = camera_pose_2 * base_pose
+    camera_pose_3 = camera_pose_3 * base_pose
+    camera_pose_4 = camera_pose_4 * base_pose
+    
+    # linear triangulation to find best pose
+    best_count = 0
+    best_pose = camera_pose_1
+    for camera_pose in [camera_pose_1, camera_pose_2, camera_pose_3, camera_pose_4]:
+        print(camera_pose)
+        
+    # return best camera pose
+    return best_pose
