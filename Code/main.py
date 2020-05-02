@@ -98,3 +98,16 @@ for i in range(25, len(files) - 1):
     # update the base pose for further frame calculation
     original_base_pose = np.dot(original_base_pose, original_pose)
     base_pose = np.dot(base_pose, best_camera_pose)
+
+    if(count % 5 == 0):
+        original_x_points.append(original_base_pose[0, 3])
+        original_z_points.append(-original_base_pose[2, 3])
+        x_points.append(base_pose[0, 3])
+        z_points.append(-base_pose[2, 3])
+        
+        # plot
+        #plt.plot(x_points, z_points, 'o', color='r')
+        #plt.plot(original_x_points, original_z_points, 'o', color='b')
+        #plt.show()
+        
+    count = count + 1
