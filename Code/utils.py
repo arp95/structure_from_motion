@@ -27,8 +27,11 @@
 # header files loaded
 import numpy as np
 import cv2
+import glob
 from ReadCameraModel import *
 from UndistortImage import *
+from scipy.optimize import leastsq
+from matplotlib import pyplot as plt
 
 
 # get the image
@@ -45,7 +48,7 @@ def get_image(file):
     
     image = cv2.imread(file, 0)
     image = cv2.cvtColor(image, cv2.COLOR_BayerGR2BGR)
-    fx, fy, cx, cy, camera_image, LUT = ReadCameraModel("../data/model/")
+    fx, fy, cx, cy, camera_image, LUT = ReadCameraModel("data/model/")
     k_matrix = np.zeros((3, 3))
     k_matrix[0, 0] = fx
     k_matrix[1, 1] = fy
@@ -57,50 +60,33 @@ def get_image(file):
 
 
 #  get transformation matrices
-def get_transformation_matrix(ptsLeft, ptsRight):
+def get_transformation_matrix(pl, pr):
     
     # mean for ptsLeft and ptsRight
-    ptsLeft_mean_x = np.mean(ptsLeft[:, 0])
-    ptsLeft_mean_y = np.mean(ptsLeft[:, 1])
-    ptsRight_mean_x = np.mean(ptsRight[:, 0])
-    ptsRight_mean_y = np.mean(ptsRight[:, 1])
-    
-    # get updated ptsLeft and ptsRight
-    sum_ptsLeft = 0.0
-    sum_ptsRight = 0.0
-    for index in range(0, len(ptsLeft)):
-        x = ptsLeft[index][0] - ptsLeft_mean_x
-        y = ptsLeft[index][1] - ptsLeft_mean_y
-        sum_ptsLeft = sum_ptsLeft + np.sqrt((x ** 2) + (y ** 2))
-        
-    for index in range(0, len(ptsRight)):
-        x = ptsRight[index][0] - ptsRight_mean_x
-        y = ptsRight[index][1] - ptsRight_mean_y
-        sum_ptsRight = sum_ptsRight + np.sqrt((x ** 2) + (y ** 2))
-    sum_ptsLeft = sum_ptsLeft / len(ptsLeft)
-    sum_ptsRight = sum_ptsRight / len(ptsRight)
+    ptsLeft_mean_x = np.mean(pl[:, 0])
+    ptsLeft_mean_y = np.mean(pl[:, 1])
+    ptsRight_mean_x = np.mean(pr[:, 0])
+    ptsRight_mean_y = np.mean(pr[:, 1])
     
     # scale factor for ptsLeft and ptsRight
-    scale_ptsLeft = np.sqrt(2) / sum_ptsLeft
-    scale_ptsRight = np.sqrt(2) / sum_ptsRight
+    scale_ptsLeft = np.sqrt(2) / np.sum(((pl[:, 0] - ptsLeft_mean_x) ** 2 + (pl[:, 1] - ptsLeft_mean_y) ** 2) ** (1 / 2))
+    scale_ptsRight = np.sqrt(2) / np.sum(((pr[:, 0] - ptsRight_mean_x) ** 2 + (pr[:, 1] - ptsRight_mean_y) ** 2) ** (1 / 2))
     
     # get transformation matrices
     ptsLeft_transformation_matrix = np.dot(np.array([[scale_ptsLeft, 0, 0], [0, scale_ptsLeft, 0], [0, 0, 1]]), np.array([[1, 0, -ptsLeft_mean_x], [0, 1, -ptsLeft_mean_y], [0, 0, 1]]))
     ptsRight_transformation_matrix = np.dot(np.array([[scale_ptsRight, 0, 0], [0, scale_ptsRight, 0], [0, 0, 1]]), np.array([[1, 0, -ptsRight_mean_x], [0, 1, -ptsRight_mean_y], [0, 0, 1]]))
     
     # get normalized points
-    for index in range(0, len(ptsLeft)):
-        point = np.array([[ptsLeft[index][0]], [ptsLeft[index][1]], [1]])
-        point = np.dot(ptsLeft_transformation_matrix, point)
-        ptsLeft[index] = np.array([point[0][0] / point[2][0], point[1][0] / point[2][0]])
-    
-    for index in range(0, len(ptsRight)):
-        point = np.array([[ptsRight[index][0]], [ptsRight[index][1]], [1]])
-        point = np.dot(ptsRight_transformation_matrix, point)
-        ptsRight[index] = np.array([point[0][0] / point[2][0], point[1][0] / point[2][0]])
+    for index in range(0, len(pl)):
+        pl[index][0] = (pl[index][0] - ptsLeft_mean_x) * scale_ptsLeft
+        pl[index][1] = (pl[index][1] - ptsLeft_mean_y) * scale_ptsLeft
+        
+    for index in range(0, len(pr)):
+        pr[index][0] = (pr[index][0] - ptsRight_mean_x) * scale_ptsRight
+        pr[index][1] = (pr[index][1] - ptsRight_mean_y) * scale_ptsRight
     
     # return matrices
-    return (ptsLeft, ptsRight, ptsLeft_transformation_matrix, ptsRight_transformation_matrix)
+    return (pl, pr, ptsLeft_transformation_matrix, ptsRight_transformation_matrix)
 
 
 # get keypoints between frame 1 and frame 2
@@ -113,39 +99,37 @@ def get_keypoints(image1, image2):
     
     Outputs:
     
-    ptsLeft: point correspondences for left image
-    ptsRight: point correspondences for right image
+    pl: point correspondences for left image
+    pr: point correspondences for right image
     """
     
     # use sift keypoint to get the points
-    sift = cv2.ORB_create()
-    kp1, des1 = sift.detectAndCompute(image1, None)
-    kp2, des2 = sift.detectAndCompute(image2, None)
-    des1 = np.asarray(des1, np.float32)
-    des2 = np.asarray(des2, np.float32)
-    flann = cv2.FlannBasedMatcher(dict(algorithm = 0, trees = 5), dict(checks = 50))
-    matches = flann.knnMatch(des1, des2, k = 2)
-    good = []
-    ptsLeft = []
-    ptsRight = []
+    sift = cv2.xfeatures2d.SIFT_create()
+    kp1, des1 = sift.detectAndCompute(image1,None)
+    kp2, des2 = sift.detectAndCompute(image2,None)
+
+    FLANN_INDEX_KDTREE = 0
+    index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
+    search_params = dict(checks = 50)
+    flann = cv2.FlannBasedMatcher(index_params, search_params)
+    matches = flann.knnMatch(des1, des2, k=2)
+    pl = []
+    pr = []
 
     for i,(m,n) in enumerate(matches):
-        if m.distance < (0.8 * n.distance):
-            ptsRight.append(kp2[m.trainIdx].pt)
-            ptsLeft.append(kp1[m.queryIdx].pt)
-
-    ptsLeft = np.int32(ptsLeft)
-    ptsRight = np.int32(ptsRight)
-    return (ptsLeft, ptsRight)
+        if m.distance < (0.5*n.distance):
+            pl.append(kp1[m.queryIdx].pt)
+            pr.append(kp2[m.trainIdx].pt)
+    return (np.array(pl), np.array(pr))
 
 
 # get fundamental matrix with ransac
-def get_fundamental_matrix_ransac(ptsLeft, ptsRight):
+def get_fundamental_matrix_ransac(pl, pr):
     """
     Inputs:
     
-    ptsLeft: array of 8 points for left image
-    ptsRight: array of 8 points for right image
+    pl: array of 8 points for left image
+    pr: array of 8 points for right image
     
     Outputs:
     
@@ -153,45 +137,42 @@ def get_fundamental_matrix_ransac(ptsLeft, ptsRight):
     """
     
     # normalise points
-    (ptsLeft, ptsRight, ptsLeft_transformation_matrix, ptsRight_transformation_matrix) = get_transformation_matrix(ptsLeft, ptsRight)
+    (pl, pr, ptsLeft_transformation_matrix, ptsRight_transformation_matrix) = get_transformation_matrix(pl, pr)
 
     # ransac for better matrix estimation
-    iterations = 5000
-    threshold = 0.03
+    iterations = 2000
+    threshold = 0.06
     count = 0
-    best_fundamental_matrix = get_fundamental_matrix(ptsLeft[:8], ptsRight[:8], ptsLeft_transformation_matrix, ptsRight_transformation_matrix)
+    best_ptsLeft = []
+    best_ptsRight = []
+    best_fundamental_matrix = get_fundamental_matrix(pl[:8], pr[:8], ptsLeft_transformation_matrix, ptsRight_transformation_matrix)
     for iteration in range(0, iterations):
         
-        indexes = np.random.choice(np.array(ptsLeft).shape[0], 8, replace=False)
-        selected_ptsLeft = []
-        selected_ptsRight = []
-        for index in range(0, len(ptsLeft)):
-            flag = 0
-            for k in range(0, len(indexes)):
-                if(index == indexes[k]):
-                    flag = 1
-                    break
-            
-            if(flag):
-                selected_ptsLeft.append(ptsLeft[index])
-                selected_ptsRight.append(ptsRight[index])
+        indexes = np.random.randint(len(pl), size = 8)
+        random_ptsLeft = np.array([pl[indexes[0]], pl[indexes[1]], pl[indexes[2]], pl[indexes[3]], pl[indexes[4]], pl[indexes[5]], pl[indexes[6]], pl[indexes[7]]])
+        random_ptsRight = np.array([pr[indexes[0]], pr[indexes[1]], pr[indexes[2]], pr[indexes[3]], pr[indexes[4]], pr[indexes[5]], pr[indexes[6]], pr[indexes[7]]])
     
-        estimated_fundamental_mat = get_fundamental_matrix(selected_ptsLeft, selected_ptsRight, ptsLeft_transformation_matrix, ptsRight_transformation_matrix)
+        estimated_fundamental_mat = get_fundamental_matrix(random_ptsLeft, random_ptsRight, ptsLeft_transformation_matrix, ptsRight_transformation_matrix)
         estimated_count = 0
-        for index in range(0, len(ptsLeft)):
-            x_right = np.array([[ptsRight[index][0]], [ptsRight[index][1]], [1]])
-            x_left = np.array([[ptsLeft[index][0]], [ptsLeft[index][1]], [1]])
-            error = np.dot(x_right.T, np.dot(estimated_fundamental_mat, x_left))
+        sample_ptsLeft = []
+        sample_ptsRight = []
+        for index in range(0, len(pl)):
+            x_right = np.array([pr[index][0], pr[index][1], 1])
+            x_left = np.array([pl[index][0], pl[index][1], 1]).T
             
-            if(np.abs(error) < threshold):
+            if(abs(np.squeeze(np.matmul((np.matmul(x_right, estimated_fundamental_mat)), x_left))) < threshold):
                 estimated_count = estimated_count + 1
+                sample_ptsLeft.append(pl[index])
+                sample_ptsRight.append(pr[index])
                 
         if(estimated_count > count):
             count = estimated_count
             best_fundamental_matrix = estimated_fundamental_mat
+            best_ptsLeft = sample_ptsLeft
+            best_ptsRight = sample_ptsRight
     
     # return fundamental matrix
-    return best_fundamental_matrix
+    return (best_fundamental_matrix, np.array(best_ptsLeft), np.array(best_ptsRight))
     
     
 # get fundamental matrix
@@ -232,6 +213,7 @@ def get_fundamental_matrix(pointsLeft, pointsRight, ptsLeft_transformation_matri
     
     # un-normalize fundamental_mat
     fundamental_mat = np.dot(ptsRight_transformation_matrix.T, np.dot(fundamental_mat, ptsLeft_transformation_matrix))
+    #fundamental_mat = fundamental_mat / np.linalg.norm(fundamental_mat)
     
     # return the matrix
     return fundamental_mat
@@ -256,7 +238,7 @@ def get_essential_matrix(fundamental_matrix, k_matrix):
     s[1] = 1
     s[2] = 0
     essential_matrix = np.dot(u, np.dot(np.diag(s), vh))
-    essential_matrix = essential_matrix / np.linalg.norm(essential_matrix)
+    #essential_matrix = essential_matrix / np.linalg.norm(essential_matrix)
     
     # return matrix
     return essential_matrix
@@ -276,7 +258,7 @@ def get_camera_poses(essential_matrix):
     
     # define rotation matrix and get svd decomposition of essential matrix
     w = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]])
-    u, d, v = np.linalg.svd(essential_matrix)
+    u, d, v = np.linalg.svd(essential_matrix, full_matrices=True)
 
     # define four camera poses (c1, r1), (c2, r2), (c3, r3), (c4, r4)
     c1 = u[:, 2]
@@ -328,13 +310,13 @@ def is_point_in_front(camera_pose, point):
     t = camera_pose[:, -1:]
 
     # cheirality condition
-    if((r[2, :] * (point + r.T * t)) > 0):
+    if((np.dot(r[2, :], (point - t))) > 0):
         return True
     return False 
 
 
 # performs linear triangulation
-def get_linear_triangulation(camera_pose_1, camera_pose_2, pointLeft, pointRight, k_matrix):
+def get_linear_triangulation(camera_pose_1, camera_pose_2, pointLeft, pointRight):
     """
     Inputs:
     
@@ -355,19 +337,66 @@ def get_linear_triangulation(camera_pose_1, camera_pose_2, pointLeft, pointRight
     
     # get the m_matrix
     camera_pose_1 = camera_pose_1[:-1, :]
-    m_matrix = np.vstack([np.dot(pointLeft_cross_product, np.dot(k_matrix, camera_pose_1)), np.dot(pointRight_cross_product, np.dot(k_matrix, camera_pose_2))])
-    a_matrix = m_matrix[:, :-1]
-    b = -m_matrix[:, -1:]
+    m_matrix = np.vstack([np.dot(pointLeft_cross_product, camera_pose_1[:3, :]), np.dot(pointRight_cross_product, camera_pose_2)])
     
     # get the 3D point
-    point = np.dot(np.dot(np.linalg.inv(np.dot(a_matrix.T, a_matrix)), a_matrix.T), b)
+    u, s, vh = np.linalg.svd(m_matrix)
+    point = vh[-1]
+    point = (point / point[3]).reshape((4, 1))
+    point = point[:3].reshape((3, 1))
     
     # return point
     return point
     
     
+# performs non-linear triangulation
+def get_non_linear_triangulation(camera_pose_1, camera_pose_2, pointLeft, pointRight):
+    """
+    Inputs:
+    
+    camera_pose_1: the base camera pose
+    camera_pose_2: the camera pose
+    pointLeft: the image point in the left image
+    pointRight: the image point in the right image
+    k_matrix: the camera matrix
+    
+    Output: 
+    
+    point: the 3D point in camera coordinate system
+    """
+    
+    # perform linear triangulation and get linear estimate
+    estimated_point = get_linear_triangulation(camera_pose_1, camera_pose_2, pointLeft, pointRight)
+    
+    # run Levenberg-Marquardt algorithm
+    args = (camera_pose_1, camera_pose_2, pointLeft, pointRight)
+    point, success = leastsq(get_triangulation_error, estimated_point, args = args, maxfev = 10000)
+    point = np.matrix(point).T
+    
+    # return point
+    return point
+
+
+# the triangulation error function for non-linear triangulation
+def get_triangulation_error(estimated_point, camera_pose_1, camera_pose_2, pointLeft, pointRight):
+
+    # project into each frame
+    estimated_point = np.array([estimated_point[0, 0], estimated_point[1, 0], estimated_point[2, 0], [1]])
+    estimated_ptLeft = fromHomogenous(np.dot(camera_pose_1, estimated_point))
+    estimated_ptRight = fromHomogenous(np.dot(camera_pose_2, estimated_point))
+    estimated_ptLeft = np.array([estimated_ptLeft[0, 0] / estimated_ptLeft[2, 0], estimated_ptLeft[0, 0] / estimated_ptLeft[1, 0]])
+    estimated_ptRight = np.array([estimated_ptRight[0, 0] / estimated_ptRight[2, 0], estimated_ptRight[0, 0] / estimated_ptRight[1, 0]])
+    
+    # compute the diffs
+    diff1 = estimated_ptLeft - pointLeft
+    diff2 = estimated_ptRight - pointRight
+
+    # return error
+    return np.asarray(np.vstack([diff1, diff2]).T)[0, :]
+    
+    
 # estimate the best camera pose
-def get_best_camera_pose(translation_matrices, rotation_matrices, base_pose, ptsLeft, ptsRight, k_matrix):
+def get_best_camera_pose(translation_matrices, rotation_matrices, base_pose, ptsLeft, ptsRight):
     """
     Inputs:
     
@@ -388,12 +417,6 @@ def get_best_camera_pose(translation_matrices, rotation_matrices, base_pose, pts
     camera_pose_3 = np.hstack([rotation_matrices[2], translation_matrices[2]])
     camera_pose_4 = np.hstack([rotation_matrices[3], translation_matrices[3]])
     
-    # convert camera pose relative to base_pose
-    camera_pose_1 = np.dot(camera_pose_1, base_pose)
-    camera_pose_2 = np.dot(camera_pose_2, base_pose)
-    camera_pose_3 = np.dot(camera_pose_3, base_pose)
-    camera_pose_4 = np.dot(camera_pose_4, base_pose)
-    
     # linear triangulation to find best pose
     best_count = 0
     best_pose = camera_pose_1
@@ -406,16 +429,20 @@ def get_best_camera_pose(translation_matrices, rotation_matrices, base_pose, pts
             pointRight = ptsRight[index]
             
             # perform linear triangulation
-            point = get_linear_triangulation(base_pose, camera_pose, pointLeft, pointRight, k_matrix)
+            point = get_linear_triangulation(base_pose, camera_pose, pointLeft, pointRight)
             
             # check in front of the camera
-            if(is_point_in_front(base_pose, point) and is_point_in_front(camera_pose, point)):
+            if(is_point_in_front(camera_pose, point)):
                 count = count + 1
                 
         # update best_pose found
         if(count > best_count):
             best_count = count
             best_pose = camera_pose
+            
+    # assuming motion is forward
+    #if(best_pose[2, 3] > 0):
+    #    best_pose[2, 3] = -best_pose[2, 3]
             
     # return best camera pose
     return best_pose
