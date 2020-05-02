@@ -1,10 +1,12 @@
 # Structure from Motion
 
 
-### Authors
-Shantam Bajpai
+### Author
 Arpit Aggarwal
 
+
+### Example of Camera Trajectory
+![Screenshot](output/final_output.png)
 
 ### Example of Keypoints between successive frames
 ![Screenshot](output/image_output_1.jpg)
