@@ -446,3 +446,183 @@ def get_best_camera_pose(translation_matrices, rotation_matrices, base_pose, pts
             
     # return best camera pose
     return best_pose
+
+
+def LinearPnp(X,x,K):
+    
+    """
+    Inputs:
+    X: This is an Nx4 Homogenous Matrix whose row gives correspondence with the 2D Image
+    x: This is an Nx2 Matrix whose row gives correspondence with the 3D Image
+    K: The Camera Calibration Matrix
+    
+    Outputs:
+    C, R: The Camera Pose
+    """
+    # Convert the 2d correspondence to homogenous coordinates
+    x = np.hstack((x, np.ones((x.shape[0],1))))
+    
+    # Convert the 2D Correspondence to the optical world
+    x = np.dot(np.linalg.inv(K), x.T)
+    
+    # Construct the A Matrix
+    
+    A = []
+    
+    for i in range(X.shape[0]):
+        
+        X_thilda = X[i,:]
+        zeros = np.zeros((1,4))
+        print(i)
+        print(x[i,:])
+        image_correspondence = x[i,:]
+        A_matrix = np.array([[zeros, -X_thilda, image_correspondence[1]*X_thilda],[X_thilda, zeros, -image_correspondence[0]*X_thilda],[-image_correspondence[1]*X_thilda, image_correspondence[0]*X_thilda, zeros]])
+        A.append(A_matrix)
+        
+    # Stack the matrices to make an Nx12 Dimensional matrix
+    A = np.vstack(A)
+    
+    # Perform the Singular Value Decomposition
+    U, sigma, Vh = np.linalg.svd(A)
+    
+    # The last row of Vh corresponds to the solution
+    # We reshape the solution into a 3x4 matrix
+    P = Vh[-1,:].reshape(3,4)
+    
+    # The rotation Matrix is 
+    R = P[:,:3]
+    
+    # The translation matrix is 
+    t = P[:,3:]
+    
+    # Perform SVD as the least squares solution doesnot enforce orthogonality
+    U, sigma, Vh = np.linalg.svd(R)
+    
+    # Enforce Orthogonality
+    R = np.dot(U, Vh)
+    
+    # Camera Center 
+    C = np.dot(-np.linalg.inv(R), t)
+    
+    # Some Constraints
+    if np.linalg.det(R) < 0:
+        
+        R = -R
+        C = -C
+        
+    return C, R
+
+def RotationMatrixToQuaternion(R):
+    """
+    Inputs:
+    R: Rotation Matrix
+    
+    Output:
+    q: The quaternion
+    """
+    
+    qw = np.sqrt(1.0 + R[0,0] + R[1,1] + R[2,2]) / 2
+    qx = R[2,1] - R[1,2] / (4*qw) 
+    qy = R[0,2] - R[2,0] / (4*qw)
+    qz = R[1,0] - R[0,1] / (4*qw)
+    
+    quaternion = [qw,qx,qy,qz]
+    return quaternion
+
+def QuaternionToMatrix(quaternion):
+    
+    """
+    Inputs:
+    quaternion: The quaternion space representation of rotation
+    
+    Outputs:
+    R: The Rotation matrix obtained through quaternion
+    """
+    w = quaternion[0]
+    x = quaternion[1]
+    y = quaternion[2]
+    z = quaternion[3]
+    
+    Tx = 2*x
+    Ty = 2*y
+    Tz = 2*z
+
+    Twx = Tx*w
+    Twy = Ty*w
+    Twz = Tz*w
+
+    Txx = Tx*x
+    Txy = Ty*x
+    Txz = Tz*x
+
+    Tyy = Ty*y
+    Tyz = Tz*y
+    Tzz = Tz*z
+    
+    R = np.zeros((3,3))
+    
+    R[1,1] = 1 - (Tyy + Tzz)
+    R[1,2] = Txy - Twz
+    R[1,3] = Txz + Twy
+    R[2,1] = Txy + Twz
+    R[2,2] = 1 - (Txx + Tzz)
+    R[2,3] = Tyz - Twx
+    R[3,1] = Txz - Twy
+    R[3,2] = Tyz + Twx
+    R[3,3] = 1 - (Txx + Tyy)
+    
+    # Perform SVD to enforce orthogonality
+    U, sigma, Vh = np.linalg.svd(R)
+    
+    # Enforce Orthogonality
+    R = np.dot(U,Vh)
+    
+    if np.linalg.det(R) < 0:
+        
+        R = -R
+    
+    return R
+
+def NonLinearPnpError(X,x,K,C,R):
+    """
+    Inputs:
+    X: This is an Nx4 Matrix whose row gives correspondence with the 2D Image
+    x: This is an Nx2 Matrix whose row gives correspondence with the 3D Image
+    C, R: The Camera Pose
+    """
+    quaternion = RotationMatrixToQuaternion(R)
+    R = QuaternionToMatrix(quaternion)
+    
+    # Estimate the Camera Pose
+    P = np.dot(np.dot(K,R), np.concatenate((np.eye(3), -C), axis = 1))
+    
+    # The reprojection terms
+    u_reprojection = np.matmul(P[0].reshape(1,x.shape[0]), X) / np.matmul(P[2].reshape(1,x.shape[0]), X)
+    v_reprojection = np.matmul(P[1].reshape(1,x.shape[0]), X) / np.matmul(P[2].reshape(1,x.shape[0]), X)
+    
+    # Calculate the difference
+    diff1 = (x.T[0,:].reshape(1,x.shape[0]) - u_reprojection)**2
+    diff2 = (x.T[1,:].reshape(1,x.shape[0]) - v_reprojection)**2
+    
+    # Reprojection Error
+    reprojection_error = diff1 + diff2
+
+    return reprojection_error
+   
+def NonLinearPnp(X,x,K,C,R):
+    """
+    Inputs:
+    X: This is an Nx3 Matrix whose row gives correspondence with the 2D Image
+    x: This is an Nx2 Matrix whose row gives correspondence with the 3D Image
+    C, R: The Camera Pose
+    
+    Output:
+    C, R: The Camera Pose
+    """
+    # Arguments for the Error Method
+    args = (X,x,K)
+    
+    # Optimize the error function
+    pose,success = leastsq(NonLinearPnpError,[C,R], args = args)
+    
+    return pose[0],pose[1]
